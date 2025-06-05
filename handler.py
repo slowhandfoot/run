@@ -8,7 +8,15 @@ import shutil
 import requests
 from typing import Dict, Any
 
-sys.path.append('/workspace/facefusion')
+# 確認 FaceFusion 安裝路徑
+FACEFUSION_PATH = '/workspace/facefusion'
+if os.path.exists(FACEFUSION_PATH):
+    sys.path.append(FACEFUSION_PATH)
+    print(f"FaceFusion found at: {FACEFUSION_PATH}")
+else:
+    print(f"Warning: FaceFusion not found at {FACEFUSION_PATH}")
+    # 列出 workspace 內容幫助除錯
+    print("Workspace contents:", os.listdir('/workspace'))
 
 def download_file(url: str, path: str) -> bool:
     """下載檔案"""
@@ -22,6 +30,33 @@ def download_file(url: str, path: str) -> bool:
     except Exception as e:
         print(f"Download error: {e}")
         return False
+
+def find_facefusion_executable():
+    """尋找 FaceFusion 執行檔"""
+    possible_paths = [
+        '/workspace/facefusion/run.py',
+        '/workspace/facefusion/facefusion.py',
+        '/workspace/facefusion/__main__.py',
+        '/workspace/facefusion/app.py',
+        '/workspace/facefusion/main.py'
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            print(f"Found FaceFusion executable at: {path}")
+            return path
+    
+    # 如果都找不到，列出 facefusion 目錄內容
+    if os.path.exists('/workspace/facefusion'):
+        print("FaceFusion directory contents:", os.listdir('/workspace/facefusion'))
+        # 尋找所有 .py 檔案
+        py_files = [f for f in os.listdir('/workspace/facefusion') if f.endswith('.py')]
+        if py_files:
+            print(f"Python files found: {py_files}")
+            # 嘗試使用第一個找到的 .py 檔案
+            return os.path.join('/workspace/facefusion', py_files[0])
+    
+    return None
 
 def process_video_swap(source: str, target: str, options: Dict = {}) -> Dict[str, Any]:
     """執行影片換臉"""
@@ -42,28 +77,49 @@ def process_video_swap(source: str, target: str, options: Dict = {}) -> Dict[str
                 with open(path, 'wb') as f:
                     f.write(base64.b64decode(data))
         
-        # 執行 FaceFusion
+        # 尋找 FaceFusion 執行檔
+        facefusion_executable = find_facefusion_executable()
+        if not facefusion_executable:
+            return {
+                "success": False,
+                "error": "FaceFusion executable not found. Please check installation."
+            }
+        
+        # 執行 FaceFusion - 使用更通用的參數
         cmd = [
-            "python", "/workspace/facefusion/run.py",
+            "python", facefusion_executable,
             "--source", source_path,
             "--target", target_path,
             "--output", output_path,
-            "--execution-providers", "cuda",
-            "--headless",
-            "--skip-download"
+            "--headless"
         ]
+        
+        # 嘗試添加 execution provider（如果支援）
+        try:
+            cmd.extend(["--execution-providers", "cuda"])
+        except:
+            pass
         
         # 加入選項
         if options.get('enhance_face'):
-            cmd.extend(['--frame-processors', 'face_swapper', 'face_enhancer'])
-            cmd.extend(['--face-enhancer-model', 'gfpgan_1.4'])
+            try:
+                cmd.extend(['--frame-processors', 'face_swapper', 'face_enhancer'])
+                cmd.extend(['--face-enhancer-model', 'gfpgan_1.4'])
+            except:
+                # 如果參數不支援，忽略
+                pass
         
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        print(f"Running command: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd='/workspace/facefusion')
+        
+        print(f"Return code: {result.returncode}")
+        print(f"STDOUT: {result.stdout}")
+        print(f"STDERR: {result.stderr}")
         
         if result.returncode != 0:
             return {
                 "success": False,
-                "error": result.stderr or "Processing failed"
+                "error": f"Processing failed: {result.stderr or result.stdout or 'Unknown error'}"
             }
         
         # 返回結果
@@ -93,9 +149,12 @@ def handler(job):
         action = inputs.get('action', 'swap')
         
         if action == 'health':
+            # 健康檢查時也確認 FaceFusion 狀態
+            facefusion_status = "installed" if find_facefusion_executable() else "not found"
             return {
                 "status": "healthy",
-                "version": "1.0.0"
+                "version": "1.0.0",
+                "facefusion": facefusion_status
             }
         
         elif action == 'swap':
@@ -125,6 +184,6 @@ def handler(job):
             return {"error": "Unknown action"}
             
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "type": str(type(e))}
 
 runpod.serverless.start({"handler": handler})
