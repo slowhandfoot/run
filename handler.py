@@ -8,15 +8,8 @@ import shutil
 import requests
 from typing import Dict, Any
 
-# 確認 FaceFusion 安裝路徑
-FACEFUSION_PATH = '/workspace/facefusion'
-if os.path.exists(FACEFUSION_PATH):
-    sys.path.append(FACEFUSION_PATH)
-    print(f"FaceFusion found at: {FACEFUSION_PATH}")
-else:
-    print(f"Warning: FaceFusion not found at {FACEFUSION_PATH}")
-    # 列出 workspace 內容幫助除錯
-    print("Workspace contents:", os.listdir('/workspace'))
+# 將 FaceFusion 加入 Python 路徑
+sys.path.insert(0, '/workspace/facefusion')
 
 def download_file(url: str, path: str) -> bool:
     """下載檔案"""
@@ -30,33 +23,6 @@ def download_file(url: str, path: str) -> bool:
     except Exception as e:
         print(f"Download error: {e}")
         return False
-
-def find_facefusion_executable():
-    """尋找 FaceFusion 執行檔"""
-    possible_paths = [
-        '/workspace/facefusion/run.py',
-        '/workspace/facefusion/facefusion.py',
-        '/workspace/facefusion/__main__.py',
-        '/workspace/facefusion/app.py',
-        '/workspace/facefusion/main.py'
-    ]
-    
-    for path in possible_paths:
-        if os.path.exists(path):
-            print(f"Found FaceFusion executable at: {path}")
-            return path
-    
-    # 如果都找不到，列出 facefusion 目錄內容
-    if os.path.exists('/workspace/facefusion'):
-        print("FaceFusion directory contents:", os.listdir('/workspace/facefusion'))
-        # 尋找所有 .py 檔案
-        py_files = [f for f in os.listdir('/workspace/facefusion') if f.endswith('.py')]
-        if py_files:
-            print(f"Python files found: {py_files}")
-            # 嘗試使用第一個找到的 .py 檔案
-            return os.path.join('/workspace/facefusion', py_files[0])
-    
-    return None
 
 def process_video_swap(source: str, target: str, options: Dict = {}) -> Dict[str, Any]:
     """執行影片換臉"""
@@ -77,40 +43,74 @@ def process_video_swap(source: str, target: str, options: Dict = {}) -> Dict[str
                 with open(path, 'wb') as f:
                     f.write(base64.b64decode(data))
         
-        # 尋找 FaceFusion 執行檔
-        facefusion_executable = find_facefusion_executable()
-        if not facefusion_executable:
-            return {
-                "success": False,
-                "error": "FaceFusion executable not found. Please check installation."
-            }
-        
-        # 執行 FaceFusion - 使用更通用的參數
-        cmd = [
-            "python", facefusion_executable,
-            "--source", source_path,
-            "--target", target_path,
-            "--output", output_path,
-            "--headless"
-        ]
-        
-        # 嘗試添加 execution provider（如果支援）
+        # 方法1: 嘗試直接導入並使用 FaceFusion
         try:
-            cmd.extend(["--execution-providers", "cuda"])
-        except:
-            pass
-        
-        # 加入選項
-        if options.get('enhance_face'):
-            try:
+            os.chdir('/workspace/facefusion')
+            
+            # 使用 python -m 方式執行
+            cmd = [
+                sys.executable, "-m", "facefusion",
+                "--source", source_path,
+                "--target", target_path,
+                "--output", output_path,
+                "--headless",
+                "--execution-providers", "cuda"
+            ]
+            
+            # 加入選項
+            if options.get('enhance_face'):
                 cmd.extend(['--frame-processors', 'face_swapper', 'face_enhancer'])
-                cmd.extend(['--face-enhancer-model', 'gfpgan_1.4'])
-            except:
-                # 如果參數不支援，忽略
-                pass
-        
-        print(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd='/workspace/facefusion')
+            
+            print(f"Running command: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd='/workspace/facefusion')
+            
+        except Exception as e1:
+            print(f"Method 1 failed: {e1}")
+            
+            # 方法2: 嘗試使用 run.py
+            try:
+                cmd = [
+                    sys.executable, "run.py",
+                    "--source", source_path,
+                    "--target", target_path,
+                    "--output", output_path,
+                    "--headless",
+                    "--execution-providers", "cuda"
+                ]
+                
+                if options.get('enhance_face'):
+                    cmd.extend(['--frame-processors', 'face_swapper', 'face_enhancer'])
+                
+                print(f"Running command (method 2): {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, cwd='/workspace/facefusion')
+                
+            except Exception as e2:
+                print(f"Method 2 failed: {e2}")
+                
+                # 方法3: 直接執行 Python 檔案
+                main_file = None
+                for possible_file in ['facefusion.py', '__main__.py', 'app.py', 'main.py']:
+                    if os.path.exists(f'/workspace/facefusion/{possible_file}'):
+                        main_file = possible_file
+                        break
+                
+                if main_file:
+                    cmd = [
+                        sys.executable, f"/workspace/facefusion/{main_file}",
+                        "--source", source_path,
+                        "--target", target_path,
+                        "--output", output_path,
+                        "--headless"
+                    ]
+                    
+                    print(f"Running command (method 3): {' '.join(cmd)}")
+                    result = subprocess.run(cmd, capture_output=True, text=True)
+                else:
+                    return {
+                        "success": False,
+                        "error": "Cannot find FaceFusion executable. Files in directory: " + 
+                                str(os.listdir('/workspace/facefusion'))
+                    }
         
         print(f"Return code: {result.returncode}")
         print(f"STDOUT: {result.stdout}")
@@ -133,11 +133,30 @@ def process_video_swap(source: str, target: str, options: Dict = {}) -> Dict[str
                 "size": os.path.getsize(output_path)
             }
         else:
+            # 檢查是否有其他可能的輸出檔案
+            possible_outputs = [
+                output_path,
+                os.path.join(temp_dir, "output.mp4"),
+                os.path.join(os.path.dirname(target_path), "output.mp4")
+            ]
+            
+            for possible_output in possible_outputs:
+                if os.path.exists(possible_output):
+                    with open(possible_output, 'rb') as f:
+                        output_data = base64.b64encode(f.read()).decode()
+                    
+                    return {
+                        "success": True,
+                        "output": output_data,
+                        "size": os.path.getsize(possible_output)
+                    }
+            
             return {"success": False, "error": "No output generated"}
             
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(e), "type": str(type(e))}
     finally:
+        os.chdir('/workspace')  # 返回原始目錄
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 def handler(job):
@@ -149,12 +168,17 @@ def handler(job):
         action = inputs.get('action', 'swap')
         
         if action == 'health':
-            # 健康檢查時也確認 FaceFusion 狀態
-            facefusion_status = "installed" if find_facefusion_executable() else "not found"
+            # 健康檢查
+            facefusion_installed = os.path.exists('/workspace/facefusion')
+            files_in_facefusion = []
+            if facefusion_installed:
+                files_in_facefusion = os.listdir('/workspace/facefusion')[:10]  # 只列出前10個檔案
+            
             return {
                 "status": "healthy",
                 "version": "1.0.0",
-                "facefusion": facefusion_status
+                "facefusion": "installed" if facefusion_installed else "not found",
+                "facefusion_files": files_in_facefusion
             }
         
         elif action == 'swap':
@@ -164,7 +188,7 @@ def handler(job):
                     "error": "Missing source or target"
                 }
             
-            # 檔案大小限制（通過 URL 大小簡單判斷）
+            # 檔案大小限制（通過 base64 長度簡單判斷）
             if not inputs['source'].startswith('http') and len(inputs['source']) > 10_000_000:
                 return {"error": "Source image too large (max 10MB)"}
             
