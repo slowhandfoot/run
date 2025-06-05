@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y \
 # 安裝 FaceFusion
 RUN git clone https://github.com/facefusion/facefusion.git
 WORKDIR /workspace/facefusion
-RUN pip install -r requirements.txt && \
-    python install.py --onnxruntime cuda-11.8 --skip-venv
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+RUN python install.py --onnxruntime cuda-11.8 --skip-venv || true
 
 # 安裝 API 依賴
 COPY requirements.txt /workspace/
