@@ -62,10 +62,25 @@ def handler(job):
                 except:
                     tools_status[tool] = False
             
+            # 檢查 FaceFusion 結構
+            facefusion_structure = {}
+            if facefusion_exists:
+                # 檢查是否有 facefusion 子目錄
+                facefusion_subdir = os.path.exists('/facefusion/facefusion')
+                if facefusion_subdir:
+                    facefusion_structure['has_subdir'] = True
+                    facefusion_structure['subdir_files'] = os.listdir('/facefusion/facefusion')[:5]
+                
+                # 檢查各種可能的入口點
+                facefusion_structure['has_facefusion_py'] = os.path.exists('/facefusion/facefusion.py')
+                facefusion_structure['has_main_py'] = os.path.exists('/facefusion/__main__.py')
+                facefusion_structure['has_run_py'] = os.path.exists('/facefusion/run.py')
+            
             return {
                 "status": "healthy",
                 "facefusion_installed": facefusion_exists,
                 "facefusion_files": files,
+                "facefusion_structure": facefusion_structure,
                 "working_directory": os.getcwd(),
                 "python_path": sys.executable,
                 "tools_available": tools_status,
@@ -113,20 +128,31 @@ def handler(job):
                 print(f"Source size: {os.path.getsize(source_path)} bytes")
                 print(f"Target size: {os.path.getsize(target_path)} bytes")
                 
-                # 使用 python -m 執行 FaceFusion
-                os.chdir('/facefusion')
+                # 設定 Python 路徑
+                original_pythonpath = os.environ.get('PYTHONPATH', '')
+                os.environ['PYTHONPATH'] = '/facefusion:' + original_pythonpath
                 
-                # 根據實際檔案列表，使用正確的執行方式
-                cmd_options = [
-                    # 方式1: 使用 facefusion.py
-                    [sys.executable, 'facefusion.py'],
-                    # 方式2: 作為模組執行
-                    [sys.executable, '-m', 'facefusion'],
-                    # 方式3: 如果有 __main__.py
-                    [sys.executable, '__main__.py'],
-                    # 方式4: 直接執行目錄
-                    [sys.executable, '.']
-                ]
+                # 嘗試不同的執行方式
+                cmd_options = []
+                
+                # 如果有 facefusion 子目錄，添加相應的執行方式
+                if os.path.exists('/facefusion/facefusion'):
+                    cmd_options.extend([
+                        # 使用 PYTHONPATH 和 -m
+                        [sys.executable, '-m', 'facefusion'],
+                        # 直接執行子目錄
+                        [sys.executable, '-m', 'facefusion.facefusion'],
+                    ])
+                
+                # 標準執行方式
+                cmd_options.extend([
+                    # 直接執行 facefusion.py
+                    [sys.executable, '/facefusion/facefusion.py'],
+                    # 使用絕對路徑
+                    ['python', '/facefusion/facefusion.py'],
+                    # 嘗試作為腳本執行
+                    ['python3', '/facefusion/facefusion.py'],
+                ])
                 
                 result = None
                 successful_cmd = None
@@ -134,6 +160,9 @@ def handler(job):
                 
                 for i, cmd_base in enumerate(cmd_options):
                     try:
+                        # 切換到 facefusion 目錄
+                        os.chdir('/facefusion')
+                        
                         cmd = cmd_base + [
                             '--source', source_path,
                             '--target', target_path, 
@@ -158,8 +187,12 @@ def handler(job):
                         print(error_msg)
                         all_errors.append(error_msg)
                         continue
+                    finally:
+                        # 確保回到原始目錄
+                        os.chdir('/workspace')
                 
-                os.chdir('/')  # 返回根目錄
+                # 恢復原始 PYTHONPATH
+                os.environ['PYTHONPATH'] = original_pythonpath
                 
                 if result is None or result.returncode != 0:
                     # 提供更詳細的錯誤信息
@@ -169,44 +202,34 @@ def handler(job):
                         "all_errors": all_errors,
                         "last_stderr": result.stderr if result else "No result",
                         "files_in_facefusion": os.listdir('/facefusion')[:20],
-                        "facefusion_py_exists": os.path.exists('/facefusion/facefusion.py'),
-                        "main_py_exists": os.path.exists('/facefusion/__main__.py')
+                        "python_paths": sys.path[:5]
                     }
                 
                 # 檢查輸出
-                if os.path.exists(output_path):
-                    with open(output_path, 'rb') as f:
-                        output_base64 = base64.b64encode(f.read()).decode()
-                    
-                    return {
-                        "success": True,
-                        "output": output_base64,
-                        "command_used": ' '.join(successful_cmd)
-                    }
-                else:
-                    # 檢查其他可能的輸出位置
-                    possible_outputs = [
-                        output_path,
-                        '/facefusion/output.mp4',
-                        os.path.join(temp_dir, 'output.mp4'),
-                        '/facefusion/.temp/output.mp4'
-                    ]
-                    
-                    for possible in possible_outputs:
-                        if os.path.exists(possible):
-                            with open(possible, 'rb') as f:
-                                output_base64 = base64.b64encode(f.read()).decode()
-                            return {
-                                "success": True,
-                                "output": output_base64,
-                                "found_at": possible
-                            }
-                    
-                    return {
-                        "success": False,
-                        "error": "Output file not found after processing",
-                        "checked_paths": possible_outputs
-                    }
+                possible_outputs = [
+                    output_path,
+                    '/facefusion/output.mp4',
+                    os.path.join(temp_dir, 'output.mp4'),
+                    '/facefusion/.temp/output.mp4',
+                    '/workspace/output.mp4'
+                ]
+                
+                for possible in possible_outputs:
+                    if os.path.exists(possible):
+                        with open(possible, 'rb') as f:
+                            output_base64 = base64.b64encode(f.read()).decode()
+                        return {
+                            "success": True,
+                            "output": output_base64,
+                            "command_used": ' '.join(successful_cmd),
+                            "found_at": possible
+                        }
+                
+                return {
+                    "success": False,
+                    "error": "Output file not found after processing",
+                    "checked_paths": possible_outputs
+                }
         
         return {"error": "Unknown action"}
         
