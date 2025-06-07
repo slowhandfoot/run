@@ -5,222 +5,251 @@ import subprocess
 import base64
 import tempfile
 import requests
+import json
 
 def download_file(url, path):
-    """下載檔案的輔助函數，支援多種方式"""
+    """下載檔案的輔助函數"""
     try:
-        # 方法 1: 使用 requests
         response = requests.get(url, timeout=30)
         response.raise_for_status()
         with open(path, 'wb') as f:
             f.write(response.content)
         return True
     except Exception as e:
-        print(f"Requests download failed: {e}")
-        
-        # 方法 2: 使用 wget
-        try:
-            result = subprocess.run(['wget', '-O', path, url], 
-                                    capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                return True
-            print(f"Wget failed: {result.stderr}")
-        except Exception as e2:
-            print(f"Wget error: {e2}")
-            
-        # 方法 3: 使用 curl
-        try:
-            result = subprocess.run(['curl', '-L', '-o', path, url], 
-                                    capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                return True
-            print(f"Curl failed: {result.stderr}")
-        except Exception as e3:
-            print(f"Curl error: {e3}")
+        print(f"Download failed: {e}")
+        return False
+
+def explore_facefusion():
+    """探索 FaceFusion 的正確使用方式"""
+    exploration_results = {}
     
-    return False
+    # 1. 檢查幫助信息
+    help_commands = [
+        [sys.executable, '/facefusion/facefusion.py', '--help'],
+        [sys.executable, '/facefusion/facefusion.py', 'headless-run', '--help'],
+        [sys.executable, '/facefusion/facefusion.py', 'run', '--help']
+    ]
+    
+    for cmd in help_commands:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            cmd_str = ' '.join(cmd[-2:])  # 簡化顯示
+            exploration_results[f"help_{cmd_str}"] = {
+                "stdout": result.stdout[:1000],
+                "stderr": result.stderr[:500]
+            }
+        except Exception as e:
+            exploration_results[f"help_{' '.join(cmd[-2:])}"] = str(e)
+    
+    # 2. 檢查配置檔案
+    if os.path.exists('/facefusion/facefusion.ini'):
+        try:
+            with open('/facefusion/facefusion.ini', 'r') as f:
+                exploration_results['config_content'] = f.read()[:500]
+        except:
+            pass
+    
+    return exploration_results
 
 def handler(job):
-    """RunPod Handler"""
+    """RunPod Handler - 完整重構版"""
     try:
         inputs = job['input']
         action = inputs.get('action', 'swap')
         
         if action == 'health':
-            # 檢查 FaceFusion 是否存在
+            # 基本健康檢查
             facefusion_exists = os.path.exists('/facefusion')
-            files = []
-            if facefusion_exists:
-                files = os.listdir('/facefusion')[:10]
-            
-            # 檢查必要工具
-            tools_status = {}
-            for tool in ['wget', 'curl', 'ffmpeg']:
-                try:
-                    subprocess.run([tool, '--version'], capture_output=True, timeout=5)
-                    tools_status[tool] = True
-                except:
-                    tools_status[tool] = False
-            
-            # 檢查 FaceFusion 結構
-            facefusion_structure = {}
-            if facefusion_exists:
-                # 檢查是否有 facefusion 子目錄
-                facefusion_subdir = os.path.exists('/facefusion/facefusion')
-                if facefusion_subdir:
-                    facefusion_structure['has_subdir'] = True
-                    facefusion_structure['subdir_files'] = os.listdir('/facefusion/facefusion')[:5]
-                
-                # 檢查各種可能的入口點
-                facefusion_structure['has_facefusion_py'] = os.path.exists('/facefusion/facefusion.py')
-                facefusion_structure['has_main_py'] = os.path.exists('/facefusion/__main__.py')
-                facefusion_structure['has_run_py'] = os.path.exists('/facefusion/run.py')
-            
             return {
                 "status": "healthy",
+                "version": "4.0.0",
                 "facefusion_installed": facefusion_exists,
-                "facefusion_files": files,
-                "facefusion_structure": facefusion_structure,
                 "working_directory": os.getcwd(),
-                "python_path": sys.executable,
-                "tools_available": tools_status,
-                "requests_module": 'requests' in sys.modules or True,
-                "version": "3.0.0"  # 版本標記
+                "python_path": sys.executable
+            }
+        
+        elif action == 'explore':
+            # 新增：探索模式，了解 FaceFusion 的正確用法
+            os.chdir('/facefusion')
+            exploration = explore_facefusion()
+            os.chdir('/workspace')
+            
+            return {
+                "action": "explore",
+                "exploration_results": exploration,
+                "facefusion_files": os.listdir('/facefusion')[:20]
             }
         
         elif action == 'swap':
             # 創建臨時目錄
             with tempfile.TemporaryDirectory() as temp_dir:
-                # 保存輸入檔案
+                # 1. 下載檔案
                 source_path = os.path.join(temp_dir, "source.jpg")
                 target_path = os.path.join(temp_dir, "target.mp4") 
                 output_path = os.path.join(temp_dir, "output.mp4")
                 
-                # 處理 source
-                if inputs['source'].startswith('http'):
-                    print(f"Downloading source from: {inputs['source']}")
-                    if not download_file(inputs['source'], source_path):
-                        return {
-                            "success": False,
-                            "error": "Failed to download source file"
-                        }
-                else:
-                    with open(source_path, 'wb') as f:
-                        f.write(base64.b64decode(inputs['source']))
+                # 處理輸入檔案
+                for file_type, file_path, input_data in [
+                    ('source', source_path, inputs.get('source')),
+                    ('target', target_path, inputs.get('target'))
+                ]:
+                    if not input_data:
+                        return {"success": False, "error": f"Missing {file_type} input"}
+                    
+                    if input_data.startswith('http'):
+                        if not download_file(input_data, file_path):
+                            return {"success": False, "error": f"Failed to download {file_type}"}
+                    else:
+                        try:
+                            with open(file_path, 'wb') as f:
+                                f.write(base64.b64decode(input_data))
+                        except Exception as e:
+                            return {"success": False, "error": f"Failed to decode {file_type}: {str(e)}"}
                 
-                # 處理 target
-                if inputs['target'].startswith('http'):
-                    print(f"Downloading target from: {inputs['target']}")
-                    if not download_file(inputs['target'], target_path):
-                        return {
-                            "success": False,
-                            "error": "Failed to download target file"
-                        }
-                else:
-                    with open(target_path, 'wb') as f:
-                        f.write(base64.b64decode(inputs['target']))
+                # 驗證檔案
+                for file_type, file_path in [('source', source_path), ('target', target_path)]:
+                    if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                        return {"success": False, "error": f"{file_type} file is invalid"}
                 
-                # 檢查檔案是否存在和大小
-                if not os.path.exists(source_path):
-                    return {"success": False, "error": "Source file not created"}
-                if not os.path.exists(target_path):
-                    return {"success": False, "error": "Target file not created"}
+                print(f"Files ready - Source: {os.path.getsize(source_path)}B, Target: {os.path.getsize(target_path)}B")
                 
-                print(f"Source size: {os.path.getsize(source_path)} bytes")
-                print(f"Target size: {os.path.getsize(target_path)} bytes")
-                
-                # 切換到 facefusion 目錄
+                # 2. 執行 FaceFusion
                 os.chdir('/facefusion')
                 
-                # 構建命令 - 使用 headless-run
-                cmd = [
-                    sys.executable, 
-                    'facefusion.py',
-                    'headless-run',  # 重要！添加子命令
-                    '--source', source_path,
-                    '--target', target_path, 
-                    '--output', output_path,
-                    '--execution-providers', 'cuda',
-                    '--skip-download'  # 跳過模型下載檢查
-                ]
+                # 根據之前的錯誤，我們知道需要探索正確的參數格式
+                # 這裡嘗試最可能的幾種方式
+                attempts = []
                 
-                print(f"Executing: {' '.join(cmd)}")
+                # 嘗試 1: 最基本的格式
+                attempt1 = {
+                    "name": "Basic headless-run",
+                    "cmd": [sys.executable, 'facefusion.py', 'headless-run',
+                           '--source', source_path,
+                           '--target', target_path,
+                           '--output', output_path]
+                }
                 
-                try:
-                    # 執行命令
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                # 嘗試 2: 使用配置檔案
+                attempt2 = {
+                    "name": "With config",
+                    "cmd": [sys.executable, 'facefusion.py', 'headless-run',
+                           '--config-path', 'facefusion.ini',
+                           '--source', source_path,
+                           '--target', target_path,
+                           '--output', output_path]
+                }
+                
+                # 嘗試 3: 使用環境變數和參數
+                attempt3 = {
+                    "name": "With environment",
+                    "cmd": [sys.executable, 'facefusion.py', 'run',
+                           '--source', source_path,
+                           '--target', target_path,
+                           '--output', output_path,
+                           '--execution-providers', 'cpu',  # 先用 CPU 測試
+                           '--skip-download'],
+                    "env": {
+                        "GRADIO_SERVER_NAME": "0.0.0.0",
+                        "GRADIO_SERVER_PORT": "7860"
+                    }
+                }
+                
+                attempts = [attempt1, attempt2, attempt3]
+                
+                # 執行嘗試
+                best_result = None
+                all_attempts_info = []
+                
+                for i, attempt in enumerate(attempts):
+                    print(f"\n=== Attempt {i+1}: {attempt['name']} ===")
                     
-                    print(f"Return code: {result.returncode}")
-                    print(f"Stdout: {result.stdout[:500]}")
-                    print(f"Stderr: {result.stderr[:500]}")
+                    env = os.environ.copy()
+                    if 'env' in attempt:
+                        env.update(attempt['env'])
                     
-                    # 回到原始目錄
-                    os.chdir('/workspace')
-                    
-                    if result.returncode != 0:
-                        return {
-                            "success": False,
-                            "error": "FaceFusion execution failed",
+                    try:
+                        result = subprocess.run(
+                            attempt['cmd'],
+                            capture_output=True,
+                            text=True,
+                            timeout=300,
+                            env=env
+                        )
+                        
+                        attempt_info = {
+                            "name": attempt['name'],
                             "return_code": result.returncode,
-                            "stdout": result.stdout[:1000],
-                            "stderr": result.stderr[:1000]
+                            "stdout_preview": result.stdout[:300],
+                            "stderr_preview": result.stderr[:300]
                         }
-                    
-                    # 檢查輸出檔案
-                    possible_outputs = [
+                        all_attempts_info.append(attempt_info)
+                        
+                        print(f"Return code: {result.returncode}")
+                        
+                        if result.returncode == 0:
+                            best_result = result
+                            break
+                            
+                    except Exception as e:
+                        all_attempts_info.append({
+                            "name": attempt['name'],
+                            "error": str(e)
+                        })
+                
+                os.chdir('/workspace')
+                
+                # 3. 檢查結果
+                if best_result and best_result.returncode == 0:
+                    # 查找輸出檔案
+                    search_paths = [
                         output_path,
-                        '/facefusion/output.mp4',
+                        os.path.join('/facefusion', 'output.mp4'),
                         os.path.join(temp_dir, 'output.mp4'),
-                        '/facefusion/.temp/output.mp4',
-                        '/workspace/output.mp4'
+                        '/facefusion/.temp/output.mp4'
                     ]
                     
-                    for possible in possible_outputs:
-                        if os.path.exists(possible):
-                            print(f"Found output at: {possible}")
-                            with open(possible, 'rb') as f:
+                    # 也檢查臨時目錄中的所有 mp4
+                    temp_mp4s = [os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if f.endswith('.mp4')]
+                    search_paths.extend(temp_mp4s)
+                    
+                    for path in search_paths:
+                        if os.path.exists(path) and os.path.getsize(path) > 0:
+                            with open(path, 'rb') as f:
                                 output_base64 = base64.b64encode(f.read()).decode()
+                            
                             return {
                                 "success": True,
                                 "output": output_base64,
-                                "message": "Face swap completed successfully!",
-                                "output_location": possible
+                                "message": "Face swap completed!",
+                                "output_path": path,
+                                "file_size": os.path.getsize(path)
                             }
                     
-                    # 如果沒找到輸出，列出可能的位置
-                    temp_files = os.listdir(temp_dir) if os.path.exists(temp_dir) else []
-                    facefusion_files = os.listdir('/facefusion')[:20]
-                    
+                    # 輸出檔案未找到
                     return {
                         "success": False,
-                        "error": "Output file not found",
-                        "checked_paths": possible_outputs,
-                        "temp_dir_files": temp_files,
-                        "facefusion_dir_files": facefusion_files,
-                        "stdout": result.stdout[:500]
+                        "error": "Process completed but output not found",
+                        "searched_paths": search_paths,
+                        "temp_files": os.listdir(temp_dir),
+                        "stdout": best_result.stdout[:500]
                     }
-                    
-                except subprocess.TimeoutExpired:
-                    os.chdir('/workspace')
+                else:
+                    # 所有嘗試都失敗
                     return {
                         "success": False,
-                        "error": "Process timeout after 300 seconds"
-                    }
-                except Exception as e:
-                    os.chdir('/workspace')
-                    return {
-                        "success": False,
-                        "error": f"Execution error: {str(e)}"
+                        "error": "All attempts failed",
+                        "attempts": all_attempts_info,
+                        "suggestion": "Try 'explore' action first to understand the correct parameters"
                     }
         
-        return {"error": "Unknown action"}
+        return {"error": f"Unknown action: {action}"}
         
     except Exception as e:
         import traceback
         return {
             "error": str(e), 
-            "type": str(type(e)),
-            "traceback": traceback.format_exc()
+            "type": str(type(e).__name__),
+            "traceback": traceback.format_exc()[:1000]
         }
 
 runpod.serverless.start({"handler": handler})
