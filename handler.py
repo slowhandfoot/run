@@ -84,7 +84,8 @@ def handler(job):
                 "working_directory": os.getcwd(),
                 "python_path": sys.executable,
                 "tools_available": tools_status,
-                "requests_module": 'requests' in sys.modules or True
+                "requests_module": 'requests' in sys.modules or True,
+                "version": "3.0.0"  # 版本標記
             }
         
         elif action == 'swap':
@@ -119,7 +120,7 @@ def handler(job):
                     with open(target_path, 'wb') as f:
                         f.write(base64.b64decode(inputs['target']))
                 
-                # 檢查檔案是否存在
+                # 檢查檔案是否存在和大小
                 if not os.path.exists(source_path):
                     return {"success": False, "error": "Source file not created"}
                 if not os.path.exists(target_path):
@@ -128,108 +129,89 @@ def handler(job):
                 print(f"Source size: {os.path.getsize(source_path)} bytes")
                 print(f"Target size: {os.path.getsize(target_path)} bytes")
                 
-                # 設定 Python 路徑
-                original_pythonpath = os.environ.get('PYTHONPATH', '')
-                os.environ['PYTHONPATH'] = '/facefusion:' + original_pythonpath
+                # 切換到 facefusion 目錄
+                os.chdir('/facefusion')
                 
-                # 嘗試不同的執行方式
-                cmd_options = []
-                
-                # 如果有 facefusion 子目錄，添加相應的執行方式
-                if os.path.exists('/facefusion/facefusion'):
-                    cmd_options.extend([
-                        # 使用 PYTHONPATH 和 -m
-                        [sys.executable, '-m', 'facefusion'],
-                        # 直接執行子目錄
-                        [sys.executable, '-m', 'facefusion.facefusion'],
-                    ])
-                
-                # 標準執行方式
-                cmd_options.extend([
-                    # 直接執行 facefusion.py
-                    [sys.executable, '/facefusion/facefusion.py'],
-                    # 使用絕對路徑
-                    ['python', '/facefusion/facefusion.py'],
-                    # 嘗試作為腳本執行
-                    ['python3', '/facefusion/facefusion.py'],
-                ])
-                
-                result = None
-                successful_cmd = None
-                all_errors = []
-                
-                for i, cmd_base in enumerate(cmd_options):
-                    try:
-                        # 切換到 facefusion 目錄
-                        os.chdir('/facefusion')
-                        
-                        cmd = cmd_base + [
-                            '--source', source_path,
-                            '--target', target_path, 
-                            '--output', output_path,
-                            '--headless',
-                            '--execution-providers', 'cuda'
-                        ]
-                        
-                        print(f"Attempt {i+1}: {' '.join(cmd)}")
-                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-                        
-                        if result.returncode == 0:
-                            successful_cmd = cmd
-                            print(f"Success with command: {' '.join(cmd_base)}")
-                            break
-                        else:
-                            error_msg = f"Command {i+1} failed: {result.stderr[:200]}"
-                            print(error_msg)
-                            all_errors.append(error_msg)
-                    except Exception as e:
-                        error_msg = f"Command {i+1} exception: {str(e)}"
-                        print(error_msg)
-                        all_errors.append(error_msg)
-                        continue
-                    finally:
-                        # 確保回到原始目錄
-                        os.chdir('/workspace')
-                
-                # 恢復原始 PYTHONPATH
-                os.environ['PYTHONPATH'] = original_pythonpath
-                
-                if result is None or result.returncode != 0:
-                    # 提供更詳細的錯誤信息
-                    return {
-                        "success": False,
-                        "error": "All execution methods failed",
-                        "all_errors": all_errors,
-                        "last_stderr": result.stderr if result else "No result",
-                        "files_in_facefusion": os.listdir('/facefusion')[:20],
-                        "python_paths": sys.path[:5]
-                    }
-                
-                # 檢查輸出
-                possible_outputs = [
-                    output_path,
-                    '/facefusion/output.mp4',
-                    os.path.join(temp_dir, 'output.mp4'),
-                    '/facefusion/.temp/output.mp4',
-                    '/workspace/output.mp4'
+                # 構建命令 - 使用 headless-run
+                cmd = [
+                    sys.executable, 
+                    'facefusion.py',
+                    'headless-run',  # 重要！添加子命令
+                    '--source', source_path,
+                    '--target', target_path, 
+                    '--output', output_path,
+                    '--execution-providers', 'cuda',
+                    '--skip-download'  # 跳過模型下載檢查
                 ]
                 
-                for possible in possible_outputs:
-                    if os.path.exists(possible):
-                        with open(possible, 'rb') as f:
-                            output_base64 = base64.b64encode(f.read()).decode()
-                        return {
-                            "success": True,
-                            "output": output_base64,
-                            "command_used": ' '.join(successful_cmd),
-                            "found_at": possible
-                        }
+                print(f"Executing: {' '.join(cmd)}")
                 
-                return {
-                    "success": False,
-                    "error": "Output file not found after processing",
-                    "checked_paths": possible_outputs
-                }
+                try:
+                    # 執行命令
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    
+                    print(f"Return code: {result.returncode}")
+                    print(f"Stdout: {result.stdout[:500]}")
+                    print(f"Stderr: {result.stderr[:500]}")
+                    
+                    # 回到原始目錄
+                    os.chdir('/workspace')
+                    
+                    if result.returncode != 0:
+                        return {
+                            "success": False,
+                            "error": "FaceFusion execution failed",
+                            "return_code": result.returncode,
+                            "stdout": result.stdout[:1000],
+                            "stderr": result.stderr[:1000]
+                        }
+                    
+                    # 檢查輸出檔案
+                    possible_outputs = [
+                        output_path,
+                        '/facefusion/output.mp4',
+                        os.path.join(temp_dir, 'output.mp4'),
+                        '/facefusion/.temp/output.mp4',
+                        '/workspace/output.mp4'
+                    ]
+                    
+                    for possible in possible_outputs:
+                        if os.path.exists(possible):
+                            print(f"Found output at: {possible}")
+                            with open(possible, 'rb') as f:
+                                output_base64 = base64.b64encode(f.read()).decode()
+                            return {
+                                "success": True,
+                                "output": output_base64,
+                                "message": "Face swap completed successfully!",
+                                "output_location": possible
+                            }
+                    
+                    # 如果沒找到輸出，列出可能的位置
+                    temp_files = os.listdir(temp_dir) if os.path.exists(temp_dir) else []
+                    facefusion_files = os.listdir('/facefusion')[:20]
+                    
+                    return {
+                        "success": False,
+                        "error": "Output file not found",
+                        "checked_paths": possible_outputs,
+                        "temp_dir_files": temp_files,
+                        "facefusion_dir_files": facefusion_files,
+                        "stdout": result.stdout[:500]
+                    }
+                    
+                except subprocess.TimeoutExpired:
+                    os.chdir('/workspace')
+                    return {
+                        "success": False,
+                        "error": "Process timeout after 300 seconds"
+                    }
+                except Exception as e:
+                    os.chdir('/workspace')
+                    return {
+                        "success": False,
+                        "error": f"Execution error: {str(e)}"
+                    }
         
         return {"error": "Unknown action"}
         
