@@ -4,6 +4,41 @@ import sys
 import subprocess
 import base64
 import tempfile
+import requests
+
+def download_file(url, path):
+    """下載檔案的輔助函數，支援多種方式"""
+    try:
+        # 方法 1: 使用 requests
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        with open(path, 'wb') as f:
+            f.write(response.content)
+        return True
+    except Exception as e:
+        print(f"Requests download failed: {e}")
+        
+        # 方法 2: 使用 wget
+        try:
+            result = subprocess.run(['wget', '-O', path, url], 
+                                    capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                return True
+            print(f"Wget failed: {result.stderr}")
+        except Exception as e2:
+            print(f"Wget error: {e2}")
+            
+        # 方法 3: 使用 curl
+        try:
+            result = subprocess.run(['curl', '-L', '-o', path, url], 
+                                    capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                return True
+            print(f"Curl failed: {result.stderr}")
+        except Exception as e3:
+            print(f"Curl error: {e3}")
+    
+    return False
 
 def handler(job):
     """RunPod Handler"""
@@ -18,12 +53,23 @@ def handler(job):
             if facefusion_exists:
                 files = os.listdir('/facefusion')[:10]
             
+            # 檢查必要工具
+            tools_status = {}
+            for tool in ['wget', 'curl', 'ffmpeg']:
+                try:
+                    subprocess.run([tool, '--version'], capture_output=True, timeout=5)
+                    tools_status[tool] = True
+                except:
+                    tools_status[tool] = False
+            
             return {
                 "status": "healthy",
                 "facefusion_installed": facefusion_exists,
                 "facefusion_files": files,
                 "working_directory": os.getcwd(),
-                "python_path": sys.executable
+                "python_path": sys.executable,
+                "tools_available": tools_status,
+                "requests_module": 'requests' in sys.modules or True
             }
         
         elif action == 'swap':
@@ -34,19 +80,38 @@ def handler(job):
                 target_path = os.path.join(temp_dir, "target.mp4") 
                 output_path = os.path.join(temp_dir, "output.mp4")
                 
-                # 解碼 base64 輸入
+                # 處理 source
                 if inputs['source'].startswith('http'):
-                    # 如果是 URL，下載檔案
-                    subprocess.run(['wget', '-O', source_path, inputs['source']], check=True)
+                    print(f"Downloading source from: {inputs['source']}")
+                    if not download_file(inputs['source'], source_path):
+                        return {
+                            "success": False,
+                            "error": "Failed to download source file"
+                        }
                 else:
                     with open(source_path, 'wb') as f:
                         f.write(base64.b64decode(inputs['source']))
                 
+                # 處理 target
                 if inputs['target'].startswith('http'):
-                    subprocess.run(['wget', '-O', target_path, inputs['target']], check=True)
+                    print(f"Downloading target from: {inputs['target']}")
+                    if not download_file(inputs['target'], target_path):
+                        return {
+                            "success": False,
+                            "error": "Failed to download target file"
+                        }
                 else:
                     with open(target_path, 'wb') as f:
                         f.write(base64.b64decode(inputs['target']))
+                
+                # 檢查檔案是否存在
+                if not os.path.exists(source_path):
+                    return {"success": False, "error": "Source file not created"}
+                if not os.path.exists(target_path):
+                    return {"success": False, "error": "Target file not created"}
+                
+                print(f"Source size: {os.path.getsize(source_path)} bytes")
+                print(f"Target size: {os.path.getsize(target_path)} bytes")
                 
                 # 使用 python -m 執行 FaceFusion
                 os.chdir('/facefusion')
@@ -60,7 +125,9 @@ def handler(job):
                     # 方式3: 執行 facefusion.py
                     [sys.executable, 'facefusion.py'],
                     # 方式4: 直接執行目錄
-                    [sys.executable, '.']
+                    [sys.executable, '.'],
+                    # 方式5: 如果有 run.py
+                    [sys.executable, 'run.py']
                 ]
                 
                 result = None
@@ -135,6 +202,11 @@ def handler(job):
         return {"error": "Unknown action"}
         
     except Exception as e:
-        return {"error": str(e), "type": str(type(e))}
+        import traceback
+        return {
+            "error": str(e), 
+            "type": str(type(e)),
+            "traceback": traceback.format_exc()
+        }
 
 runpod.serverless.start({"handler": handler})
