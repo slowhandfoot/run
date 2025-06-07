@@ -116,24 +116,23 @@ def handler(job):
                 # 使用 python -m 執行 FaceFusion
                 os.chdir('/facefusion')
                 
-                # 嘗試不同的執行方式
+                # 根據實際檔案列表，使用正確的執行方式
                 cmd_options = [
-                    # 方式1: 作為模組執行
-                    [sys.executable, '-m', 'facefusion'],
-                    # 方式2: 執行 __main__.py
-                    [sys.executable, '__main__.py'],
-                    # 方式3: 執行 facefusion.py
+                    # 方式1: 使用 facefusion.py
                     [sys.executable, 'facefusion.py'],
+                    # 方式2: 作為模組執行
+                    [sys.executable, '-m', 'facefusion'],
+                    # 方式3: 如果有 __main__.py
+                    [sys.executable, '__main__.py'],
                     # 方式4: 直接執行目錄
-                    [sys.executable, '.'],
-                    # 方式5: 如果有 run.py
-                    [sys.executable, 'run.py']
+                    [sys.executable, '.']
                 ]
                 
                 result = None
                 successful_cmd = None
+                all_errors = []
                 
-                for cmd_base in cmd_options:
+                for i, cmd_base in enumerate(cmd_options):
                     try:
                         cmd = cmd_base + [
                             '--source', source_path,
@@ -143,27 +142,35 @@ def handler(job):
                             '--execution-providers', 'cuda'
                         ]
                         
-                        print(f"Trying command: {' '.join(cmd)}")
+                        print(f"Attempt {i+1}: {' '.join(cmd)}")
                         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
                         
                         if result.returncode == 0:
                             successful_cmd = cmd
+                            print(f"Success with command: {' '.join(cmd_base)}")
                             break
                         else:
-                            print(f"Command failed with return code {result.returncode}")
-                            print(f"Error: {result.stderr[:500]}")
+                            error_msg = f"Command {i+1} failed: {result.stderr[:200]}"
+                            print(error_msg)
+                            all_errors.append(error_msg)
                     except Exception as e:
-                        print(f"Command exception: {e}")
+                        error_msg = f"Command {i+1} exception: {str(e)}"
+                        print(error_msg)
+                        all_errors.append(error_msg)
                         continue
                 
                 os.chdir('/')  # 返回根目錄
                 
                 if result is None or result.returncode != 0:
+                    # 提供更詳細的錯誤信息
                     return {
                         "success": False,
                         "error": "All execution methods failed",
-                        "last_error": result.stderr if result else "No result",
-                        "files_in_facefusion": os.listdir('/facefusion')[:20]
+                        "all_errors": all_errors,
+                        "last_stderr": result.stderr if result else "No result",
+                        "files_in_facefusion": os.listdir('/facefusion')[:20],
+                        "facefusion_py_exists": os.path.exists('/facefusion/facefusion.py'),
+                        "main_py_exists": os.path.exists('/facefusion/__main__.py')
                     }
                 
                 # 檢查輸出
@@ -181,7 +188,8 @@ def handler(job):
                     possible_outputs = [
                         output_path,
                         '/facefusion/output.mp4',
-                        os.path.join(temp_dir, 'output.mp4')
+                        os.path.join(temp_dir, 'output.mp4'),
+                        '/facefusion/.temp/output.mp4'
                     ]
                     
                     for possible in possible_outputs:
@@ -196,7 +204,8 @@ def handler(job):
                     
                     return {
                         "success": False,
-                        "error": "Output file not found after processing"
+                        "error": "Output file not found after processing",
+                        "checked_paths": possible_outputs
                     }
         
         return {"error": "Unknown action"}
